@@ -1,0 +1,23 @@
+{
+  "itemGroup.oregolems": "Ore Golems Expansion",
+
+  "entity.oregolems.coal_golem": "Coal Golem",
+  "entity.oregolems.mini_iron_golem": "Mini Iron Golem",
+  "entity.oregolems.gold_golem": "Gold Golem",
+  "entity.oregolems.emerald_golem": "Emerald Golem",
+  "entity.oregolems.redstone_golem": "Redstone Golem",
+  "entity.oregolems.lapis_golem": "Lapis Golem",
+  "entity.oregolems.diamond_golem": "Diamond Golem",
+  "entity.oregolems.netherite_golem": "Netherite Golem",
+
+  "item.oregolems.coal_golem_spawn_egg": "Coal Golem Spawn Egg",
+  "item.oregolems.mini_iron_golem_spawn_egg": "Mini Iron Golem Spawn Egg",
+  "item.oregolems.gold_golem_spawn_egg": "Gold Golem Spawn Egg",
+  "item.oregolems.emerald_golem_spawn_egg": "Emerald Golem Spawn Egg",
+  "item.oregolems.redstone_golem_spawn_egg": "Redstone Golem Spawn Egg",
+  "item.oregolems.lapis_golem_spawn_egg": "Lapis Golem Spawn Egg",
+  "item.oregolems.diamond_golem_spawn_egg": "Diamond Golem Spawn Egg",
+  "item.oregolems.netherite_golem_spawn_egg": "Netherite Golem Spawn Egg",
+
+  "block.oregolems.redstone_golem_signal": "Redstone Golem Signal"
+}

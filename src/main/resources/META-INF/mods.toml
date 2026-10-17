@@ -1,0 +1,28 @@
+modLoader="javafml"
+loaderVersion="[61,)"
+license="MIT"
+
+[[mods]]
+modId="oregolems"
+version="1.1.0"
+displayName="Ore Golems Expansion"
+authors="OreGolems Team"
+description='''Adds miniature Copper-Golem-style worker golems crafted from all vanilla ores:
+Coal Golem (Smelter & Torch Placer), Mini Iron Golem (Base Guard & Item Magnet),
+Gold Golem (Redstone & Barter Assistant), Emerald Golem (Automated Farmer),
+Redstone Golem (Mobile Redstone Power Source), Lapis Golem (XP Collector & Enchanter Helper),
+and Diamond & Netherite Golems (Automated Miners).'''
+
+[[dependencies.oregolems]]
+    modId="forge"
+    mandatory=true
+    versionRange="[61,)"
+    ordering="NONE"
+    side="BOTH"
+
+[[dependencies.oregolems]]
+    modId="minecraft"
+    mandatory=true
+    versionRange="[1.21.11,1.22)"
+    ordering="NONE"
+    side="BOTH"
