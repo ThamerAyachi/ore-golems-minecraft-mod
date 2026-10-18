@@ -27,6 +27,7 @@ import net.minecraft.world.level.storage.loot.LootParams;
 import net.minecraft.world.level.storage.loot.LootTable;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParamSets;
 import net.minecraft.world.level.storage.loot.parameters.LootContextParams;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.ArrayList;
 import java.util.EnumSet;
@@ -36,6 +37,7 @@ import java.util.List;
  * Gold Golem (gold_golem) - Redstone & Barter Assistant.
  * Periodically presses nearby Stone/Wooden Buttons and flips Levers (classic Copper Golem style).
  * If given a Gold Ingot, produces a random Piglin bartering drop after 5 seconds (100 ticks).
+ * Includes a 2-second (40-tick) timeout so unreachable buttons/levers are cancelled and skipped.
  */
 public class GoldGolemEntity extends AbstractOreGolemEntity {
     private int barterTicksRemaining = 0;
@@ -95,7 +97,6 @@ public class GoldGolemEntity extends AbstractOreGolemEntity {
         ObjectArrayList<ItemStack> drops = lootTable.getRandomItems(params);
 
         if (drops.isEmpty()) {
-            // Fallback Piglin bartering drops
             ItemStack[] fallback = new ItemStack[]{
                     new ItemStack(Items.ENDER_PEARL, 2),
                     new ItemStack(Items.OBSIDIAN, 1),
@@ -187,13 +188,15 @@ public class GoldGolemEntity extends AbstractOreGolemEntity {
     }
 
     /**
-     * AI Goal: Periodically seeks and presses nearby Stone/Wooden Buttons and flips Levers (classic Copper Golem style).
+     * AI Goal: Periodically seeks and presses nearby Stone/Wooden Buttons and flips Levers.
+     * Cancels and blacklists unreachable buttons/levers after 2 seconds (40 ticks).
      */
     public static class PressButtonsAndLeversGoal extends Goal {
         private final GoldGolemEntity golem;
         private final int radius;
         private BlockPos targetPos;
         private int cooldown;
+        private int stuckTicks;
 
         public PressButtonsAndLeversGoal(GoldGolemEntity golem, int radius) {
             this.golem = golem;
@@ -210,7 +213,7 @@ public class GoldGolemEntity extends AbstractOreGolemEntity {
                 this.cooldown--;
                 return false;
             }
-            this.cooldown = 40 + this.golem.getRandom().nextInt(40);
+            this.cooldown = 25 + this.golem.getRandom().nextInt(25);
             this.targetPos = findRandomButtonOrLever();
             return this.targetPos != null;
         }
@@ -218,20 +221,17 @@ public class GoldGolemEntity extends AbstractOreGolemEntity {
         @Override
         public boolean canContinueToUse() {
             return this.targetPos != null
+                    && this.stuckTicks < MAX_TASK_STUCK_TICKS
                     && this.golem.getBarterTicksRemaining() <= 0
                     && isButtonOrLever(this.golem.level().getBlockState(this.targetPos));
         }
 
         @Override
         public void start() {
+            this.stuckTicks = 0;
             if (this.targetPos != null) {
                 this.golem.setWorking(true);
-                this.golem.getNavigation().moveTo(
-                        this.targetPos.getX() + 0.5D,
-                        this.targetPos.getY(),
-                        this.targetPos.getZ() + 0.5D,
-                        1.05D
-                );
+                this.golem.moveTowardsBlock(this.targetPos, 1.05D);
             }
         }
 
@@ -240,42 +240,56 @@ public class GoldGolemEntity extends AbstractOreGolemEntity {
             if (this.targetPos == null) {
                 return;
             }
-            this.golem.getLookControl().setLookAt(
-                    this.targetPos.getX() + 0.5D,
-                    this.targetPos.getY() + 0.5D,
-                    this.targetPos.getZ() + 0.5D
-            );
-            if (this.golem.blockPosition().distSqr(this.targetPos) <= 5.0D) {
-                Level level = this.golem.level();
-                BlockState state = level.getBlockState(this.targetPos);
-                if (state.getBlock() instanceof ButtonBlock button) {
-                    if (!state.getValue(ButtonBlock.POWERED)) {
-                        button.press(state, level, this.targetPos, null);
-                        this.golem.playSound(SoundEvents.COPPER_GOLEM_SPIN, 0.8F, 1.2F);
-                    }
-                } else if (state.getBlock() instanceof LeverBlock lever) {
-                    lever.pull(state, level, this.targetPos, null);
-                    level.playSound(null, this.targetPos, SoundEvents.LEVER_CLICK, SoundSource.BLOCKS, 0.6F, 1.0F);
+            Vec3 center = Vec3.atCenterOf(this.targetPos);
+            this.golem.getLookControl().setLookAt(center.x, center.y, center.z);
+
+            this.stuckTicks++;
+            if (this.stuckTicks % 8 == 0) {
+                this.golem.moveTowardsBlock(this.targetPos, 1.05D);
+            }
+
+            double distSqr = this.golem.distanceToSqr(center);
+            if (distSqr <= 7.5D) {
+                activateTargetControl();
+                this.targetPos = null;
+                this.cooldown = 40 + this.golem.getRandom().nextInt(40);
+            } else if (this.stuckTicks >= MAX_TASK_STUCK_TICKS) {
+                this.golem.ignoreBlockTemporarily(this.targetPos, 100);
+                this.golem.getNavigation().stop();
+                this.targetPos = null;
+                this.cooldown = 15;
+            }
+        }
+
+        private void activateTargetControl() {
+            Level level = this.golem.level();
+            BlockState state = level.getBlockState(this.targetPos);
+            if (state.getBlock() instanceof ButtonBlock button) {
+                if (!state.getValue(ButtonBlock.POWERED)) {
+                    button.press(state, level, this.targetPos, null);
                     this.golem.playSound(SoundEvents.COPPER_GOLEM_SPIN, 0.8F, 1.2F);
                 }
-                this.targetPos = null;
-                this.cooldown = 60 + this.golem.getRandom().nextInt(60);
+            } else if (state.getBlock() instanceof LeverBlock lever) {
+                lever.pull(state, level, this.targetPos, null);
+                level.playSound(null, this.targetPos, SoundEvents.LEVER_CLICK, SoundSource.BLOCKS, 0.6F, 1.0F);
+                this.golem.playSound(SoundEvents.COPPER_GOLEM_SPIN, 0.8F, 1.2F);
             }
         }
 
         @Override
         public void stop() {
             this.targetPos = null;
+            this.stuckTicks = 0;
             this.golem.setWorking(false);
         }
 
         private BlockPos findRandomButtonOrLever() {
-            BlockPos origin = this.golem.blockPosition();
+            BlockPos origin = this.golem.getLogicalBlockPos();
             List<BlockPos> candidates = new ArrayList<>();
             for (BlockPos pos : BlockPos.betweenClosed(
                     origin.offset(-this.radius, -2, -this.radius),
                     origin.offset(this.radius, 2, this.radius))) {
-                if (isButtonOrLever(this.golem.level().getBlockState(pos))) {
+                if (!this.golem.isBlockIgnored(pos) && isButtonOrLever(this.golem.level().getBlockState(pos))) {
                     candidates.add(pos.immutable());
                 }
             }

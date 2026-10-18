@@ -4,7 +4,7 @@ license="MIT"
 
 [[mods]]
 modId="oregolems"
-version="1.1.0"
+version="1.2.0"
 displayName="Ore Golems Expansion"
 authors="OreGolems Team"
 description='''Adds miniature Copper-Golem-style worker golems crafted from all vanilla ores:

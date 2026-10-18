@@ -31,6 +31,7 @@ import java.util.EnumSet;
  * Emits a Redstone signal (power level 15) to the block directly underneath or adjacent to it
  * when standing still. Can be right-clicked by the player to toggle between
  * "Follow/Wander" and "Stay/Power" modes.
+ * Includes a 2-second (40-tick) follow timeout so it switches cleanly to wandering if a player is unreachable.
  */
 public class RedstoneGolemEntity extends AbstractOreGolemEntity {
     private static final EntityDataAccessor<Boolean> DATA_STAY_POWER_MODE =
@@ -45,7 +46,7 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
     public static AttributeSupplier.Builder createAttributes() {
         return createBaseGolemAttributes()
                 .add(Attributes.MAX_HEALTH, 28.0D)
-                .add(Attributes.MOVEMENT_SPEED, 0.28D);
+                .add(Attributes.MOVEMENT_SPEED, 0.29D);
     }
 
     @Override
@@ -99,7 +100,7 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
     public void tick() {
         super.tick();
         if (!this.level().isClientSide()) {
-            BlockPos currentPos = this.blockPosition();
+            BlockPos currentPos = this.getLogicalBlockPos();
             if (this.isEmittingRedstoneSignal()) {
                 this.setWorking(true);
                 if (this.activeSignalPos != null && !this.activeSignalPos.equals(currentPos)) {
@@ -192,7 +193,7 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
     }
 
     /**
-     * AI Goal: Follows nearby players when in Follow/Wander mode.
+     * AI Goal: Follows nearby players when in Follow/Wander mode, cancelling after 2 seconds if stuck.
      */
     public static class FollowPlayerInWanderModeGoal extends Goal {
         private final RedstoneGolemEntity golem;
@@ -200,6 +201,8 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
         private final float stopDistance;
         private final float startDistance;
         private Player targetPlayer;
+        private int followStuckTicks;
+        private int cooldown;
 
         public FollowPlayerInWanderModeGoal(RedstoneGolemEntity golem, double speedModifier, float stopDistance, float startDistance) {
             this.golem = golem;
@@ -211,6 +214,10 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
 
         @Override
         public boolean canUse() {
+            if (this.cooldown > 0) {
+                this.cooldown--;
+                return false;
+            }
             if (this.golem.isStayPowerMode()) {
                 return false;
             }
@@ -230,21 +237,31 @@ public class RedstoneGolemEntity extends AbstractOreGolemEntity {
             return !this.golem.isStayPowerMode()
                     && this.targetPlayer != null
                     && this.targetPlayer.isAlive()
-                    && !this.golem.getNavigation().isDone()
+                    && this.followStuckTicks < MAX_TASK_STUCK_TICKS
                     && this.golem.distanceToSqr(this.targetPlayer) > (double) (this.stopDistance * this.stopDistance);
+        }
+
+        @Override
+        public void start() {
+            this.followStuckTicks = 0;
         }
 
         @Override
         public void tick() {
             if (this.targetPlayer != null) {
+                this.followStuckTicks++;
                 this.golem.getLookControl().setLookAt(this.targetPlayer, 10.0F, (float) this.golem.getMaxHeadXRot());
                 this.golem.getNavigation().moveTo(this.targetPlayer, this.speedModifier);
+                if (this.followStuckTicks >= MAX_TASK_STUCK_TICKS) {
+                    this.cooldown = 60;
+                }
             }
         }
 
         @Override
         public void stop() {
             this.targetPlayer = null;
+            this.followStuckTicks = 0;
             this.golem.getNavigation().stop();
         }
     }

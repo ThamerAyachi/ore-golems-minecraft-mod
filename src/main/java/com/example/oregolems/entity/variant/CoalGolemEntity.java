@@ -20,6 +20,7 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.entity.AbstractFurnaceBlockEntity;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.Vec3;
 
 import java.lang.reflect.Field;
 import java.util.EnumSet;
@@ -29,6 +30,7 @@ import java.util.EnumSet;
  * Scans a 10-block radius for Furnaces, Blast Furnaces, or Smokers that are actively smelting
  * or have items in the input slot (slot 0) with 0 fuel, and automatically adds fuel burn time.
  * Also places torches when the local block light level drops below 4.
+ * Includes a 2-second (40-tick) timeout so unreachable furnaces are skipped cleanly.
  */
 public class CoalGolemEntity extends AbstractOreGolemEntity {
     private static Field DATA_ACCESS_FIELD;
@@ -49,7 +51,7 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
     public static AttributeSupplier.Builder createAttributes() {
         return createBaseGolemAttributes()
                 .add(Attributes.MAX_HEALTH, 26.0D)
-                .add(Attributes.MOVEMENT_SPEED, 0.28D);
+                .add(Attributes.MOVEMENT_SPEED, 0.29D);
     }
 
     @Override
@@ -93,7 +95,6 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
             }
         }
 
-        // Also supply a Coal item if fuel slot is empty and litTime could not be set directly
         if (!updatedViaData && furnace.getItem(1).isEmpty()) {
             furnace.setItem(1, new ItemStack(Items.COAL, 1));
         }
@@ -106,7 +107,7 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
     }
 
     /**
-     * AI Goal: Places a torch at the golem's position if local block light level drops below 4.
+     * AI Goal: Places a torch at the golem's logical position if local block light level drops below 4.
      */
     public static class PlaceTorchInDarkGoal extends Goal {
         private final CoalGolemEntity golem;
@@ -125,7 +126,7 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
             if (this.golem.level().isClientSide() || !this.golem.onGround()) {
                 return false;
             }
-            BlockPos pos = this.golem.blockPosition();
+            BlockPos pos = this.golem.getLogicalBlockPos();
             Level level = this.golem.level();
             int blockLight = level.getBrightness(LightLayer.BLOCK, pos);
             if (blockLight >= 4) {
@@ -139,7 +140,7 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
         @Override
         public void start() {
             Level level = this.golem.level();
-            BlockPos pos = this.golem.blockPosition();
+            BlockPos pos = this.golem.getLogicalBlockPos();
             BlockState torchState = Blocks.TORCH.defaultBlockState();
             if (level.getBlockState(pos).isAir() && torchState.canSurvive(level, pos)) {
                 this.golem.setWorking(true);
@@ -150,7 +151,7 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
                             pos.getX() + 0.5D, pos.getY() + 0.6D, pos.getZ() + 0.5D,
                             8, 0.15D, 0.15D, 0.15D, 0.01D);
                 }
-                this.cooldown = 60;
+                this.cooldown = 40;
             }
         }
 
@@ -163,12 +164,14 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
     /**
      * AI Goal: Scans a 10-block radius for Furnaces, Blast Furnaces, or Smokers that are actively smelting
      * or have items in slot 0 with 0 fuel, paths to them, and injects fuel burn time.
+     * Cancels and blacklists unreachable furnaces after 2 seconds (40 ticks).
      */
     public static class FuelNearbyFurnacesGoal extends Goal {
         private final CoalGolemEntity golem;
         private final int radius;
         private BlockPos targetFurnacePos;
         private int scanCooldown;
+        private int stuckTicks;
 
         public FuelNearbyFurnacesGoal(CoalGolemEntity golem, int radius) {
             this.golem = golem;
@@ -182,26 +185,24 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
                 this.scanCooldown--;
                 return false;
             }
-            this.scanCooldown = 20;
+            this.scanCooldown = 15;
             this.targetFurnacePos = findFurnaceNeedingFuel();
             return this.targetFurnacePos != null;
         }
 
         @Override
         public boolean canContinueToUse() {
-            return this.targetFurnacePos != null && isValidTargetFurnace(this.targetFurnacePos);
+            return this.targetFurnacePos != null
+                    && this.stuckTicks < MAX_TASK_STUCK_TICKS
+                    && isValidTargetFurnace(this.targetFurnacePos);
         }
 
         @Override
         public void start() {
+            this.stuckTicks = 0;
             if (this.targetFurnacePos != null) {
                 this.golem.setWorking(true);
-                this.golem.getNavigation().moveTo(
-                        this.targetFurnacePos.getX() + 0.5D,
-                        this.targetFurnacePos.getY(),
-                        this.targetFurnacePos.getZ() + 0.5D,
-                        1.1D
-                );
+                this.golem.moveTowardsBlock(this.targetFurnacePos, 1.1D);
             }
         }
 
@@ -210,51 +211,65 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
             if (this.targetFurnacePos == null) {
                 return;
             }
-            this.golem.getLookControl().setLookAt(
-                    this.targetFurnacePos.getX() + 0.5D,
-                    this.targetFurnacePos.getY() + 0.5D,
-                    this.targetFurnacePos.getZ() + 0.5D
-            );
-            double distSq = this.golem.blockPosition().distSqr(this.targetFurnacePos);
-            if (distSq <= 6.25D) {
-                BlockEntity be = this.golem.level().getBlockEntity(this.targetFurnacePos);
-                if (be instanceof AbstractFurnaceBlockEntity furnace) {
-                    addFurnaceFuelTime(this.golem.level(), this.targetFurnacePos, furnace, 1600);
-                    this.golem.level().playSound(null, this.targetFurnacePos, SoundEvents.FLINTANDSTEEL_USE, SoundSource.BLOCKS, 0.8F, 1.0F);
-                    if (this.golem.level() instanceof ServerLevel serverLevel) {
-                        serverLevel.sendParticles(ParticleTypes.FLAME,
-                                this.targetFurnacePos.getX() + 0.5D,
-                                this.targetFurnacePos.getY() + 0.5D,
-                                this.targetFurnacePos.getZ() + 0.5D,
-                                12, 0.25D, 0.25D, 0.25D, 0.02D);
-                    }
-                }
+            Vec3 furnaceCenter = Vec3.atCenterOf(this.targetFurnacePos);
+            this.golem.getLookControl().setLookAt(furnaceCenter.x, furnaceCenter.y, furnaceCenter.z);
+
+            this.stuckTicks++;
+            if (this.stuckTicks % 8 == 0) {
+                this.golem.moveTowardsBlock(this.targetFurnacePos, 1.1D);
+            }
+
+            double distSqr = this.golem.distanceToSqr(furnaceCenter);
+            if (distSqr <= 7.5D) {
+                fuelTargetFurnace();
                 this.targetFurnacePos = null;
-                this.scanCooldown = 40;
-            } else if (this.golem.getNavigation().isDone()) {
-                this.golem.getNavigation().moveTo(
-                        this.targetFurnacePos.getX() + 0.5D,
-                        this.targetFurnacePos.getY(),
-                        this.targetFurnacePos.getZ() + 0.5D,
-                        1.1D
-                );
+                this.scanCooldown = 30;
+            } else if (this.stuckTicks >= MAX_TASK_STUCK_TICKS) {
+                // If within 6 blocks after 2 seconds, fuel remotely; otherwise ignore this furnace and move on
+                if (distSqr <= 36.0D) {
+                    fuelTargetFurnace();
+                } else {
+                    this.golem.ignoreBlockTemporarily(this.targetFurnacePos, 100);
+                }
+                this.golem.getNavigation().stop();
+                this.targetFurnacePos = null;
+                this.scanCooldown = 20;
+            }
+        }
+
+        private void fuelTargetFurnace() {
+            BlockEntity be = this.golem.level().getBlockEntity(this.targetFurnacePos);
+            if (be instanceof AbstractFurnaceBlockEntity furnace) {
+                addFurnaceFuelTime(this.golem.level(), this.targetFurnacePos, furnace, 1600);
+                this.golem.level().playSound(null, this.targetFurnacePos, SoundEvents.FLINTANDSTEEL_USE, SoundSource.BLOCKS, 0.8F, 1.0F);
+                if (this.golem.level() instanceof ServerLevel serverLevel) {
+                    serverLevel.sendParticles(ParticleTypes.FLAME,
+                            this.targetFurnacePos.getX() + 0.5D,
+                            this.targetFurnacePos.getY() + 0.5D,
+                            this.targetFurnacePos.getZ() + 0.5D,
+                            12, 0.25D, 0.25D, 0.25D, 0.02D);
+                }
             }
         }
 
         @Override
         public void stop() {
             this.targetFurnacePos = null;
+            this.stuckTicks = 0;
             this.golem.setWorking(false);
         }
 
         private BlockPos findFurnaceNeedingFuel() {
-            BlockPos origin = this.golem.blockPosition();
+            BlockPos origin = this.golem.getLogicalBlockPos();
             BlockPos closest = null;
             double closestDist = Double.MAX_VALUE;
 
             for (BlockPos pos : BlockPos.betweenClosed(
                     origin.offset(-this.radius, -3, -this.radius),
                     origin.offset(this.radius, 3, this.radius))) {
+                if (this.golem.isBlockIgnored(pos)) {
+                    continue;
+                }
                 if (isValidTargetFurnace(pos)) {
                     double d = origin.distSqr(pos);
                     if (d < closestDist) {
@@ -277,7 +292,6 @@ public class CoalGolemEntity extends AbstractOreGolemEntity {
             }
             int litTime = getFurnaceLitTime(furnace);
             ItemStack fuel = furnace.getItem(1);
-            // Needs fuel if input has items and either 0 fuel / unlit or actively smelting with low burn time
             return (litTime <= 200 && fuel.isEmpty()) || litTime == 0;
         }
     }

@@ -31,6 +31,7 @@ import java.util.List;
  * Lapis Golem (lapis_golem) - XP Collector & Enchanter Helper.
  * Absorbs nearby XP Orbs within a 12-block radius and stores them.
  * When right-clicked with an empty Glass Bottle, consumes stored XP to give the player an experience_bottle.
+ * Includes a 2-second (40-tick) timeout so orbs stuck behind blocks are absorbed cleanly.
  */
 public class LapisGolemEntity extends AbstractOreGolemEntity {
     public static final int XP_PER_BOTTLE = 7;
@@ -45,7 +46,7 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
     public static AttributeSupplier.Builder createAttributes() {
         return createBaseGolemAttributes()
                 .add(Attributes.MAX_HEALTH, 28.0D)
-                .add(Attributes.MOVEMENT_SPEED, 0.28D);
+                .add(Attributes.MOVEMENT_SPEED, 0.29D);
     }
 
     @Override
@@ -135,11 +136,13 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
 
     /**
      * AI Goal: Pulls in and absorbs ExperienceOrb entities within a 12-block radius.
+     * Absorbs orbs directly if stuck behind blocks for >2 seconds (40 ticks).
      */
     public static class AbsorbNearbyXpOrbsGoal extends Goal {
         private final LapisGolemEntity golem;
         private final double radius;
         private List<ExperienceOrb> orbs;
+        private int absorbTicks;
 
         public AbsorbNearbyXpOrbsGoal(LapisGolemEntity golem, double radius) {
             this.golem = golem;
@@ -162,11 +165,12 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
 
         @Override
         public boolean canContinueToUse() {
-            return canUse();
+            return this.absorbTicks < MAX_TASK_STUCK_TICKS && canUse();
         }
 
         @Override
         public void start() {
+            this.absorbTicks = 0;
             this.golem.setWorking(true);
         }
 
@@ -175,6 +179,7 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
             if (this.orbs == null) {
                 return;
             }
+            this.absorbTicks++;
             Vec3 center = this.golem.position().add(0.0D, 0.5D, 0.0D);
             for (ExperienceOrb orb : this.orbs) {
                 if (!orb.isAlive()) {
@@ -182,7 +187,7 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
                 }
                 Vec3 diff = center.subtract(orb.position());
                 double dist = diff.length();
-                if (dist <= 1.5D) {
+                if (dist <= 1.8D || this.absorbTicks >= MAX_TASK_STUCK_TICKS - 1) {
                     int value = Math.max(1, orb.getValue());
                     this.golem.addStoredXp(value);
                     orb.discard();
@@ -193,7 +198,7 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
                                 6, 0.25D, 0.25D, 0.25D, 0.1D);
                     }
                 } else {
-                    Vec3 pull = diff.normalize().scale(0.22D);
+                    Vec3 pull = diff.normalize().scale(0.24D);
                     orb.setDeltaMovement(orb.getDeltaMovement().scale(0.7D).add(pull));
                     orb.hurtMarked = true;
                 }
@@ -203,6 +208,7 @@ public class LapisGolemEntity extends AbstractOreGolemEntity {
         @Override
         public void stop() {
             this.orbs = null;
+            this.absorbTicks = 0;
             this.golem.setWorking(false);
         }
     }

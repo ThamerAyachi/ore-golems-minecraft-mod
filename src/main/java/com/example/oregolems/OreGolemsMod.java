@@ -270,7 +270,6 @@ public final class OreGolemsMod {
         }
 
         // Clear both blocks and play destroy particles, then replace the base Ore Block with a Copper Chest
-        // and spawn the Ore Golem right on top of its chest (identical to vanilla Copper Golem behavior)
         net.minecraft.core.Direction facing = placedState.hasProperty(net.minecraft.world.level.block.HorizontalDirectionalBlock.FACING)
                 ? placedState.getValue(net.minecraft.world.level.block.HorizontalDirectionalBlock.FACING)
                 : net.minecraft.core.Direction.NORTH;
@@ -280,15 +279,19 @@ public final class OreGolemsMod {
         serverLevel.levelEvent(LevelEvent.PARTICLES_DESTROY_BLOCK, pumpkinPos, Block.getId(placedState));
         serverLevel.levelEvent(LevelEvent.PARTICLES_DESTROY_BLOCK, basePos, Block.getId(baseState));
 
-        float yaw = facing.toYRot();
-        golem.snapTo(pumpkinPos.getX() + 0.5D, pumpkinPos.getY() + 0.05D, pumpkinPos.getZ() + 0.5D, yaw, 0.0F);
-        golem.setHomeChestPos(basePos);
-        serverLevel.addFreshEntity(golem);
-
         BlockState chestState = net.minecraft.world.level.block.CopperChestBlock.getFromCopperBlock(
                 Blocks.COPPER_BLOCK, facing, serverLevel, basePos
         );
         serverLevel.setBlock(basePos, chestState, 2);
+
+        BlockPos spawnBlockPos = AbstractOreGolemEntity.findAdjacentWalkablePos(serverLevel, basePos, facing);
+        double spawnY = spawnBlockPos.equals(pumpkinPos) ? pumpkinPos.getY() : spawnBlockPos.getY();
+
+        float yaw = facing.toYRot();
+        golem.snapTo(spawnBlockPos.getX() + 0.5D, spawnY, spawnBlockPos.getZ() + 0.5D, yaw, 0.0F);
+        golem.setHomeChestPos(basePos);
+        golem.onSummonedWithDirection(facing);
+        serverLevel.addFreshEntity(golem);
 
         serverLevel.updateNeighborsAt(pumpkinPos, Blocks.AIR);
         serverLevel.updateNeighborsAt(basePos, chestState.getBlock());

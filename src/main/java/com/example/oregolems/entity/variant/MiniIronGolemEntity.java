@@ -9,6 +9,7 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Container;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityType;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.Mob;
 import net.minecraft.world.entity.ai.attributes.AttributeSupplier;
 import net.minecraft.world.entity.ai.attributes.Attributes;
@@ -31,14 +32,17 @@ import java.util.List;
  * Iron Golem Mini (mini_iron_golem) - Base Guard & Item Magnet.
  * Attacks nearby hostile mobs (higher speed, lower health than vanilla Iron Golem)
  * and pulls dropped items within an 8-block radius into adjacent/nearby Chests or Barrels.
+ * Includes a 2-second (40-tick) timeout so unreachable mobs or stuck items never freeze the golem.
  */
 public class MiniIronGolemEntity extends AbstractOreGolemEntity {
+    private int combatStuckTicks = 0;
+    private double lastTargetDistSqr = Double.MAX_VALUE;
+
     public MiniIronGolemEntity(EntityType<? extends MiniIronGolemEntity> entityType, Level level) {
         super(entityType, level);
     }
 
     public static AttributeSupplier.Builder createAttributes() {
-        // Vanilla Iron Golem has 100.0 health and 0.25 movement speed; Mini Iron Golem has 40.0 health and 0.36 speed
         return createBaseGolemAttributes()
                 .add(Attributes.MAX_HEALTH, 40.0D)
                 .add(Attributes.MOVEMENT_SPEED, 0.36D)
@@ -65,8 +69,36 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
     }
 
     @Override
+    public void tick() {
+        super.tick();
+        if (!this.level().isClientSide()) {
+            LivingEntity target = this.getTarget();
+            if (target != null && target.isAlive()) {
+                double distSqr = this.distanceToSqr(target);
+                if (distSqr + 0.1D < this.lastTargetDistSqr) {
+                    this.lastTargetDistSqr = distSqr;
+                    this.combatStuckTicks = 0;
+                } else {
+                    this.combatStuckTicks++;
+                }
+                // Cancel unreachable combat target after 2 seconds (40 ticks) of no progress
+                if (this.combatStuckTicks >= MAX_TASK_STUCK_TICKS && distSqr > 6.0D) {
+                    this.setTarget(null);
+                    this.getNavigation().stop();
+                    this.combatStuckTicks = 0;
+                    this.lastTargetDistSqr = Double.MAX_VALUE;
+                }
+            } else {
+                this.combatStuckTicks = 0;
+                this.lastTargetDistSqr = Double.MAX_VALUE;
+            }
+        }
+    }
+
+    @Override
     public boolean doHurtTarget(ServerLevel level, Entity target) {
         this.setWorking(true);
+        this.combatStuckTicks = 0;
         boolean hurt = super.doHurtTarget(level, target);
         if (hurt) {
             Vec3 motion = target.getDeltaMovement();
@@ -83,11 +115,13 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
 
     /**
      * AI Goal: Pulls dropped ItemEntities within an 8-block radius and deposits them into nearby Chests or Barrels.
+     * If an item is stuck behind an obstacle for >2 seconds (40 ticks), deposits it directly so the golem never stalls.
      */
     public static class ItemMagnetGoal extends Goal {
         private final MiniIronGolemEntity golem;
         private final double radius;
         private List<ItemEntity> nearbyItems;
+        private int magnetTicks;
 
         public ItemMagnetGoal(MiniIronGolemEntity golem, double radius) {
             this.golem = golem;
@@ -110,11 +144,12 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
 
         @Override
         public boolean canContinueToUse() {
-            return canUse();
+            return this.magnetTicks < MAX_TASK_STUCK_TICKS && canUse();
         }
 
         @Override
         public void start() {
+            this.magnetTicks = 0;
             this.golem.setWorking(true);
         }
 
@@ -123,8 +158,9 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
             if (this.nearbyItems == null || this.nearbyItems.isEmpty()) {
                 return;
             }
+            this.magnetTicks++;
 
-            BlockPos chestPos = this.golem.findNearestChestOrBarrel(this.golem.blockPosition(), 8);
+            BlockPos chestPos = this.golem.findNearestChestOrBarrel(this.golem.getLogicalBlockPos(), 10);
             Container targetContainer = null;
             if (chestPos != null) {
                 BlockEntity be = this.golem.level().getBlockEntity(chestPos);
@@ -144,13 +180,14 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
                 Vec3 diff = attractTarget.subtract(itemEntity.position());
                 double dist = diff.length();
                 if (dist > 0.1D) {
-                    Vec3 pull = diff.normalize().scale(0.18D);
+                    Vec3 pull = diff.normalize().scale(0.22D);
                     itemEntity.setDeltaMovement(itemEntity.getDeltaMovement().scale(0.6D).add(pull));
                     itemEntity.hurtMarked = true;
                 }
 
-                // Deposit into adjacent/nearby Chest or Barrel when close to the golem or the container
-                if (targetContainer != null && (dist <= 2.2D || itemEntity.distanceToSqr(this.golem) <= 4.0D)) {
+                // Deposit when close to the chest/golem OR if 2 seconds (40 ticks) have elapsed pulling a stuck item
+                if (targetContainer != null
+                        && (dist <= 2.5D || itemEntity.distanceToSqr(this.golem) <= 5.0D || this.magnetTicks >= MAX_TASK_STUCK_TICKS - 1)) {
                     ItemStack remaining = depositIntoContainer(targetContainer, itemEntity.getItem());
                     if (remaining.isEmpty()) {
                         itemEntity.discard();
@@ -170,6 +207,7 @@ public class MiniIronGolemEntity extends AbstractOreGolemEntity {
         @Override
         public void stop() {
             this.nearbyItems = null;
+            this.magnetTicks = 0;
             this.golem.setWorking(false);
         }
     }
